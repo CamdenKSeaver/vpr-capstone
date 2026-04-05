@@ -1,0 +1,13 @@
+name: vpr
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - polars
+  - ipykernel
+  - scmrepo
+  - scipy
+  - scikit-learn
+  - statsmodels
+  - pip

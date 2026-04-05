@@ -1,0 +1,7 @@
+numpy
+polars
+ipykernel
+scmrepo
+scipy
+scikit-learn
+statsmodels
