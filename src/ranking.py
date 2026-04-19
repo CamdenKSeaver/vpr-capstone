@@ -1,4 +1,6 @@
 import pandas as pd
+from game import Game
+from player import Player
 
 def calc_score(game, original_player, new_player):
     #team,Season,Date,Team,Conference,Opponent Team,Opponent Conference,Location,Number,Player,P,S,MS,Kills,Errors,TotalAttacks,HitPct,Assists,Aces,SErr,Digs,RErr,BlockSolos,BlockAssists,BErr,TB,PTS,BHE,source_file,RetAtt,ContestID,is_away,kill_efficiency,Blocks
@@ -73,12 +75,14 @@ def calc_score(game, original_player, new_player):
 
     avg_hit_chances_per_hit = game.avg_same_team_hits_per_hit()
 
+    #Blocks need to be calculated
+
     kills += hits * avg_hit_chances_per_hit * new_player.kill_pct()
     point_change += kills - game.kills(original_player.id)
 
     return point_change
 
-def rank_game(game, to_rank, other_players : pd.DataFrame) -> int:
+def rank_game(game, to_rank, other_players : list[Player]) -> int:
     #to_rank actually played the game
     #retreive current score
     actual_score : int = game.score()
@@ -105,9 +109,9 @@ def rank_player(games, player, other_players) -> int:
 
     return total
 
-def rank(games : list[Game], players: pd.DataFrame):
+def rank(games : list[Game], players: list[Player]):
     #get scores for players
-    for player in players["id"].unique:
-        players["player_score"] = rank_player(games, player, players)
+    for player in players:
+        players.score = rank_player(games, player, players)
     #sort players by score
-    players.sort_values(by="player_score")
+    players.sort(key=lambda p: p.score)

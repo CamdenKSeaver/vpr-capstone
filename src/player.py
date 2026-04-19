@@ -3,8 +3,10 @@ import pandas as pd
 class Player:
     name : str
     team : str
+    id : str
     year : int
     data : pd.Dataframe 
+    score : int
 
     '''
     These should all be data access operation with little calculation
