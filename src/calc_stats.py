@@ -45,6 +45,8 @@ def calc_stats(match_data : pd.DataFrame, player_data : pd.DataFrame):
             #This allows us to calculate what the percent chance that a player will do an event if given the chance - better players should have higher percents
             #We only add a fraction of an opportunity each time as we don't have a way of knowing who is on the field at any time
             #So we average out the opportunity
+
+            #This section does not make proper use of the wrapper classes and I will rework it to do so
             if play.team == play.away_team:
                 for player in away_team_players:
                     game.player_data.loc[player_data["player"] == player, f"{play.event}_opportunity"] += 1
