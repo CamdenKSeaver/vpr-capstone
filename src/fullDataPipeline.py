@@ -8,7 +8,6 @@ one obvious thing to run when the data needs to be rebuilt.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 from pathlib import Path
@@ -442,7 +441,7 @@ def load_and_clean_pbp(
     player_master: pd.DataFrame,
     canonical_teams: list[str],
     season: str,
-) -> tuple[pd.DataFrame, dict[str, int | float | str | bool]]:
+) -> pd.DataFrame:
     # this is the slow part
     # pbp is big, so dont do random stuff here or it gets hard to debug
     pbp_path = data_dir / "wvb_pbp_div1_2025.csv"
@@ -451,9 +450,7 @@ def load_and_clean_pbp(
 
     print(f"loading play-by-play: {pbp_path}")
     pbp_raw = load_csv_flexible(pbp_path, PBP_DESIRED_COLS, PBP_DTYPE_MAP)
-    raw_rows = len(pbp_raw)
     pbp = pbp_raw.drop_duplicates().copy()
-    duplicate_exact_rows = raw_rows - len(pbp)
     del pbp_raw
 
     pbp = standardize_columns(pbp)
@@ -571,17 +568,7 @@ def load_and_clean_pbp(
         how="left",
     )
 
-    stats = {
-        "raw_pbp_rows": int(raw_rows),
-        "deduped_pbp_rows": int(len(pbp)),
-        "duplicate_exact_pbp_rows": int(duplicate_exact_rows),
-        "duplicate_exact_pbp_rate": float(duplicate_exact_rows / raw_rows) if raw_rows else 0.0,
-        "non_numeric_score_rows": int((~pbp["score_is_numeric"]).sum()),
-        "backward_score_rows": int(pbp["score_backward"].sum()),
-        "multi_point_jump_rows": int(pbp["multi_point_jump"].sum()),
-        "unresolved_actor_rows": int((pbp["actor_team_source"] == "unresolved").sum()),
-    }
-    return pbp, stats
+    return pbp
 
 
 def build_rally_tables(pbp: pd.DataFrame, season: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -972,7 +959,7 @@ def build_player_match_enriched(
     out = player_match.copy()
     out = out.merge(
         team_strength[["season", "team_clean", "team_strength_index"]],
-        on=["season", "team_clean"],
+        on=["season","team_clean"],
         how="left",
     )
     opp_strength = team_strength[["season", "team_clean", "team_strength_index"]].rename(
@@ -1133,6 +1120,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+
+
 def main() -> None:
     # full rebuild every time
     # slower, but then old output files dont sneak into the project
@@ -1153,7 +1142,7 @@ def main() -> None:
         player_match, team_match, player_master
     )
     team_strength = build_team_strength(team_match, player_master)
-    pbp, pbp_stats = load_and_clean_pbp(
+    pbp = load_and_clean_pbp(
         data_dir,
         player_master,
         canonical_team_df["team_clean"].dropna().tolist(),
@@ -1183,31 +1172,6 @@ def main() -> None:
     save_csv(player_season_features, out_dir, f"player_season_features_{args.season}")
     if args.save_event_table:
         save_csv(event_table, out_dir, f"event_table_{args.season}")
-
-    manifest = {
-        "season": args.season,
-        "repo_root": str(repo_root),
-        "data_dir": str(data_dir),
-        "out_dir": str(out_dir),
-        "players_rows": int(len(players)),
-        "player_match_rows": int(len(player_match)),
-        "team_match_rows": int(len(team_match)),
-        "player_master_rows": int(len(player_master)),
-        "team_strength_rows": int(len(team_strength)),
-        "contest_master_rows": int(len(contest_master)),
-        "rally_rows": int(len(rally_table)),
-        "event_rows": int(len(event_table)),
-        "first_ball_player_contest_rows": int(len(first_ball_player_contest)),
-        "first_ball_player_season_rows": int(len(first_ball_player_season)),
-        "player_match_enriched_rows": int(len(player_match_enriched)),
-        "player_season_features_rows": int(len(player_season_features)),
-        **pbp_stats,
-    }
-    manifest_path = out_dir / f"preprocess_manifest_{args.season}.json"
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2)
-    print(f"saved: {manifest_path}")
-    print(json.dumps(manifest, indent=2))
 
 
 if __name__ == "__main__":

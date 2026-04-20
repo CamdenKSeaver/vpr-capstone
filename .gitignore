@@ -1,4 +1,11 @@
 *.twbr
+__pycache__/
+*.pyc
 Data/model_outputs/*
 Data/preprocessed/*
 venv
+Data/original/wvb_pbp_div1_2025.csv
+data/wvb_pbp_div1_2025.csv
+src/avca_benchmark_lookup.ipynb
+src/visualize_outputs.ipynb
+docs/*.pdf
