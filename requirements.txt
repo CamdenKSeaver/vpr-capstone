@@ -1,8 +1,10 @@
 numpy
+pandas
 polars
 ipykernel
 scmrepo
 scipy
 scikit-learn
 statsmodels
-pandas
+matplotlib
+pyarrow
