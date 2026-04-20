@@ -5,3 +5,4 @@ scmrepo
 scipy
 scikit-learn
 statsmodels
+pandas
