@@ -1,5 +1,5 @@
 *.twbr
-__pycache__/
+*__pycache__/
 *.pyc
 Data/model_outputs/*
 Data/preprocessed/*
