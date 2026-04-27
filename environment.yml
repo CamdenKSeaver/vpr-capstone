@@ -10,4 +10,12 @@ dependencies:
   - scipy
   - scikit-learn
   - statsmodels
+  - matplotlib
+  - pandas=2.2.*
+  - pyarrow
+  - requests
   - pip
+
+# Create environment with `mamba env create -f environment.yml`
+# To add new dependencies, update the `environment.yml`, then update the environment with `mamba env update -f environment.yml`
+# Remove env with `conda env remove --name envname`, and clear cache with `conda clean -a`

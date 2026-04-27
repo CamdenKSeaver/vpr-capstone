@@ -11,10 +11,11 @@ import argparse
 import os
 import re
 from pathlib import Path
+import requests
+from scmrepo.git import Git
 
 import numpy as np
 import pandas as pd
-
 
 DEFAULT_SEASON = os.environ.get("VPR_SEASON", "2025-2026")
 
@@ -99,19 +100,13 @@ MANUAL_TEAM_ALIASES = {
 }
 
 
-def find_repo_root() -> Path:
-    here = Path.cwd().resolve()
-    for candidate in [here, *here.parents]:
-        if (candidate / "Data" / "original").exists():
-            return candidate
-    return here
-
-
 def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     # make columns not annoying before doing joins
     # some files say hitpct and some say hit_pct etc
     rename_map = {
-        c: re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", str(c).strip().lower())).strip("_")
+        c: re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", str(c).strip().lower())).strip(
+            "_"
+        )
         for c in df.columns
     }
     df = df.rename(columns=rename_map).copy()
@@ -211,7 +206,9 @@ def canonicalize_vs_known_teams(
     return result.fillna(raw)
 
 
-def load_csv_flexible(path_or_url: Path | str, desired_cols=None, dtype_map=None) -> pd.DataFrame:
+def load_csv_flexible(
+    path_or_url: Path | str, desired_cols=None, dtype_map=None
+) -> pd.DataFrame:
     header = pd.read_csv(path_or_url, nrows=0)
     cols = header.columns.tolist()
     usecols = cols if desired_cols is None else [c for c in cols if c in desired_cols]
@@ -238,7 +235,9 @@ def zscore(s: pd.Series) -> pd.Series:
     return (s - s.mean()) / sd
 
 
-def canonical_event_family(event_text: pd.Series, description_text: pd.Series) -> pd.Series:
+def canonical_event_family(
+    event_text: pd.Series, description_text: pd.Series
+) -> pd.Series:
     # turn the messy pbp text into a smaller list of event types
     # not perfect, but good enough to give model.py a consistent language
     evt = event_text.fillna("").astype("string")
@@ -250,7 +249,11 @@ def canonical_event_family(event_text: pd.Series, description_text: pd.Series) -
         ("ace", r"service ace|^ace$", r"service ace| ace by"),
         ("service_error", r"service error", r"service error"),
         ("reception_error", r"reception error", r"reception error"),
-        ("set_error", r"set error|ball handling error", r"set error|ball handling error"),
+        (
+            "set_error",
+            r"set error|ball handling error",
+            r"set error|ball handling error",
+        ),
         ("attack_error", r"attack error", r"attack error"),
         ("block_error", r"block error", r"block error"),
         ("dig_error", r"dig error", r"dig error"),
@@ -270,15 +273,22 @@ def canonical_event_family(event_text: pd.Series, description_text: pd.Series) -
         )
         family = family.mask(mask, label)
 
-    admin_mask = (
-        evt.str.contains(r"timeout|challenge|sanction|sub|substitution|media timeout|\+", regex=True, na=False)
-        | desc.str.contains(r"timeout|challenge|sanction|sub|substitution|media timeout", regex=True, na=False)
+    admin_mask = evt.str.contains(
+        r"timeout|challenge|sanction|sub|substitution|media timeout|\+",
+        regex=True,
+        na=False,
+    ) | desc.str.contains(
+        r"timeout|challenge|sanction|sub|substitution|media timeout",
+        regex=True,
+        na=False,
     )
     family = family.mask(family.isna() & admin_mask, "admin")
     return family.fillna("admin")
 
 
-def load_aggregate_files(data_dir: Path, season: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def load_aggregate_files(
+    data_dir: Path, season: str
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     # load the normal roster / box score files first
     # pbp is huge so I deal with it later
     players = coalesce_duplicate_columns(
@@ -286,22 +296,31 @@ def load_aggregate_files(data_dir: Path, season: str) -> tuple[pd.DataFrame, pd.
     )
     player_match = coalesce_duplicate_columns(
         standardize_columns(
-            pd.read_csv(data_dir / "women_d1_player_match_2020_2025_master.csv", low_memory=False)
+            pd.read_csv(
+                data_dir / "women_d1_player_match_2020_2025_master.csv",
+                low_memory=False,
+            )
         )
     )
     team_match = coalesce_duplicate_columns(
         standardize_columns(
-            pd.read_csv(data_dir / "women_d1_team_match_2020_2025_master.csv", low_memory=False)
+            pd.read_csv(
+                data_dir / "women_d1_team_match_2020_2025_master.csv", low_memory=False
+            )
         )
     )
 
     players = players.loc[players["season"].astype("string").eq(season)].copy()
-    player_match = player_match.loc[player_match["season"].astype("string").eq(season)].copy()
+    player_match = player_match.loc[
+        player_match["season"].astype("string").eq(season)
+    ].copy()
     team_match = team_match.loc[team_match["season"].astype("string").eq(season)].copy()
 
     if "player" in players.columns:
         bad_player_labels = {"team", "totals", "opponent totals", "opponent"}
-        players = players.loc[~clean_series(players["player"]).isin(bad_player_labels)].copy()
+        players = players.loc[
+            ~clean_series(players["player"]).isin(bad_player_labels)
+        ].copy()
 
     player_match = player_match.drop_duplicates().copy()
     return players, player_match, team_match
@@ -313,9 +332,13 @@ def build_player_master(players: pd.DataFrame) -> pd.DataFrame:
     players = players.copy()
     players["player_clean"] = clean_series(players["player"])
     players["team_clean"] = clean_team_series(players["team"])
-    players["pos_clean"] = clean_series(players["pos"]) if "pos" in players.columns else ""
+    players["pos_clean"] = (
+        clean_series(players["pos"]) if "pos" in players.columns else ""
+    )
     players["role_family"] = players["pos_clean"].map(ROLE_MAP).fillna("unknown")
-    players["number_clean"] = pd.to_numeric(players.get("number"), errors="coerce").astype("Int64")
+    players["number_clean"] = pd.to_numeric(
+        players.get("number"), errors="coerce"
+    ).astype("Int64")
     players["player_uid"] = (
         players["season"].astype("string")
         + "::"
@@ -383,27 +406,50 @@ def prepare_match_tables(
     )
 
     if "contestid" in player_match.columns:
-        player_match["contestid"] = pd.to_numeric(player_match["contestid"], errors="coerce").astype("Int64")
+        player_match["contestid"] = pd.to_numeric(
+            player_match["contestid"], errors="coerce"
+        ).astype("Int64")
     else:
-        player_match["contestid"] = pd.Series(pd.NA, index=player_match.index, dtype="Int64")
+        player_match["contestid"] = pd.Series(
+            pd.NA, index=player_match.index, dtype="Int64"
+        )
 
     return player_match, team_match, pd.DataFrame({"team_clean": canonical_teams})
 
 
-def build_team_strength(team_match: pd.DataFrame, player_master: pd.DataFrame) -> pd.DataFrame:
+def build_team_strength(
+    team_match: pd.DataFrame, player_master: pd.DataFrame
+) -> pd.DataFrame:
     # simple team strength, not some full elo thing
     # just enough to control for good/bad teams later
     team_match = team_match.copy()
-    for col in ["hit_pct", "s", "kills", "errors", "assists", "aces", "serr", "digs", "pts"]:
+    for col in [
+        "hit_pct",
+        "s",
+        "kills",
+        "errors",
+        "assists",
+        "aces",
+        "serr",
+        "digs",
+        "pts",
+    ]:
         if col not in team_match.columns:
             team_match[col] = np.nan
 
-    result_parts = team_match["result"].fillna("").astype("string").str.extract(
-        r"^\s*([WL])\s*(\d+)\s*-\s*(\d+)\s*$"
+    result_parts = (
+        team_match["result"]
+        .fillna("")
+        .astype("string")
+        .str.extract(r"^\s*([WL])\s*(\d+)\s*-\s*(\d+)\s*$")
     )
     team_match["match_win"] = result_parts[0].fillna("").eq("W").astype("int8")
-    team_match["sets_for"] = pd.to_numeric(result_parts[1], errors="coerce").fillna(0).astype("int16")
-    team_match["sets_against"] = pd.to_numeric(result_parts[2], errors="coerce").fillna(0).astype("int16")
+    team_match["sets_for"] = (
+        pd.to_numeric(result_parts[1], errors="coerce").fillna(0).astype("int16")
+    )
+    team_match["sets_against"] = (
+        pd.to_numeric(result_parts[2], errors="coerce").fillna(0).astype("int16")
+    )
     team_match["hit_pct"] = pd.to_numeric(team_match["hit_pct"], errors="coerce")
     team_match["pts"] = pd.to_numeric(team_match["pts"], errors="coerce")
 
@@ -426,7 +472,10 @@ def build_team_strength(team_match: pd.DataFrame, player_master: pd.DataFrame) -
     team_strength["team_strength_index"] = (
         0.50 * zscore(team_strength["win_pct"])
         + 0.35 * zscore(team_strength["set_diff_per_match"])
-        + 0.15 * zscore(team_strength["mean_hit_pct"].fillna(team_strength["mean_hit_pct"].median()))
+        + 0.15
+        * zscore(
+            team_strength["mean_hit_pct"].fillna(team_strength["mean_hit_pct"].median())
+        )
     )
     team_names = (
         player_master[["team_clean", "team"]]
@@ -434,6 +483,22 @@ def build_team_strength(team_match: pd.DataFrame, player_master: pd.DataFrame) -
         .rename(columns={"team": "team_display"})
     )
     return team_strength.merge(team_names, on="team_clean", how="left")
+
+
+def download_pbp_file(data_dir: Path, season_year: str) -> Path:
+    pbp_path = data_dir / f"wvb_pbp_div1_{season_year}.csv"
+    if pbp_path.exists():
+        return pbp_path
+
+    url = f"https://media.githubusercontent.com/media/JeffreyRStevens/ncaavolleyballr/refs/heads/main/data-csv/wvb_pbp_div1_{season_year}.csv"
+    r = requests.get(url, stream=True)
+    r.raise_for_status()
+
+    with open(pbp_path, "wb") as f:
+        for chunk in r.iter_content(chunk_size=1 << 20):
+            f.write(chunk)
+
+    return pbp_path
 
 
 def load_and_clean_pbp(
@@ -444,9 +509,11 @@ def load_and_clean_pbp(
 ) -> pd.DataFrame:
     # this is the slow part
     # pbp is big, so dont do random stuff here or it gets hard to debug
-    pbp_path = data_dir / "wvb_pbp_div1_2025.csv"
+    season_year = season.split("-")[0] # "2025-2026" to "2025"
+    pbp_path = data_dir / f"wvb_pbp_div1_{season_year}.csv"
     if not pbp_path.exists():
-        raise FileNotFoundError(f"Missing play-by-play file: {pbp_path}")
+        print("Downloading missing pbp file...")
+        pbp_path = download_pbp_file(data_dir, season_year)
 
     print(f"loading play-by-play: {pbp_path}")
     pbp_raw = load_csv_flexible(pbp_path, PBP_DESIRED_COLS, PBP_DTYPE_MAP)
@@ -460,13 +527,28 @@ def load_and_clean_pbp(
     pbp["set"] = pd.to_numeric(pbp["set"], errors="coerce").astype("Int16")
     pbp = pbp.dropna(subset=["contestid", "set"]).copy()
 
-    for col in ["team", "home_team", "away_team", "player", "event", "description", "score", "date"]:
+    for col in [
+        "team",
+        "home_team",
+        "away_team",
+        "player",
+        "event",
+        "description",
+        "score",
+        "date",
+    ]:
         if col not in pbp.columns:
             pbp[col] = pd.Series("", index=pbp.index, dtype="string")
 
-    pbp["team_clean"] = canonicalize_vs_known_teams(pbp["team"], canonical_teams, MANUAL_TEAM_ALIASES)
-    pbp["home_clean"] = canonicalize_vs_known_teams(pbp["home_team"], canonical_teams, MANUAL_TEAM_ALIASES)
-    pbp["away_clean"] = canonicalize_vs_known_teams(pbp["away_team"], canonical_teams, MANUAL_TEAM_ALIASES)
+    pbp["team_clean"] = canonicalize_vs_known_teams(
+        pbp["team"], canonical_teams, MANUAL_TEAM_ALIASES
+    )
+    pbp["home_clean"] = canonicalize_vs_known_teams(
+        pbp["home_team"], canonical_teams, MANUAL_TEAM_ALIASES
+    )
+    pbp["away_clean"] = canonicalize_vs_known_teams(
+        pbp["away_team"], canonical_teams, MANUAL_TEAM_ALIASES
+    )
     pbp["player_clean"] = clean_series(pbp["player"])
     pbp["event_text"] = clean_series(pbp["event"])
     pbp["description_text"] = clean_series(pbp["description"])
@@ -477,8 +559,12 @@ def load_and_clean_pbp(
     roster_key = player_master[["player_clean", "team_clean"]].drop_duplicates()
     # figure out who the actor actually plays for
     # raw team column gets weird on errors so roster lookup gets first shot
-    home_lookup = roster_key.rename(columns={"team_clean": "home_clean"}).assign(player_on_home=True)
-    away_lookup = roster_key.rename(columns={"team_clean": "away_clean"}).assign(player_on_away=True)
+    home_lookup = roster_key.rename(columns={"team_clean": "home_clean"}).assign(
+        player_on_home=True
+    )
+    away_lookup = roster_key.rename(columns={"team_clean": "away_clean"}).assign(
+        player_on_away=True
+    )
     pbp = pbp.merge(home_lookup, on=["player_clean", "home_clean"], how="left")
     pbp = pbp.merge(away_lookup, on=["player_clean", "away_clean"], how="left")
     pbp["player_on_home"] = pbp["player_on_home"].eq(True)
@@ -497,7 +583,10 @@ def load_and_clean_pbp(
         default=pd.NA,
     )
     pbp["actor_side"] = np.select(
-        [pbp["actor_team"].eq(pbp["home_clean"]), pbp["actor_team"].eq(pbp["away_clean"])],
+        [
+            pbp["actor_team"].eq(pbp["home_clean"]),
+            pbp["actor_team"].eq(pbp["away_clean"]),
+        ],
         ["home", "away"],
         default="unknown",
     )
@@ -511,14 +600,20 @@ def load_and_clean_pbp(
         default="unresolved",
     )
 
-    score_parts = pbp["score"].astype("string").str.extract(r"^\s*(\d+)\s*-\s*(\d+)\s*$")
+    score_parts = (
+        pbp["score"].astype("string").str.extract(r"^\s*(\d+)\s*-\s*(\d+)\s*$")
+    )
     # scores are how I rebuild rallies
     # weird score rows stay in, but they get flags so we can see them later
     pbp["away_score_raw"] = pd.to_numeric(score_parts[0], errors="coerce")
     pbp["home_score_raw"] = pd.to_numeric(score_parts[1], errors="coerce")
-    pbp["score_is_numeric"] = pbp["away_score_raw"].notna() & pbp["home_score_raw"].notna()
+    pbp["score_is_numeric"] = (
+        pbp["away_score_raw"].notna() & pbp["home_score_raw"].notna()
+    )
     group_set = pbp.groupby(["contestid", "set"], sort=False, observed=True)
-    pbp[["away_score_ffill", "home_score_ffill"]] = group_set[["away_score_raw", "home_score_raw"]].ffill()
+    pbp[["away_score_ffill", "home_score_ffill"]] = group_set[
+        ["away_score_raw", "home_score_raw"]
+    ].ffill()
     pbp[["away_score_ffill", "home_score_ffill"]] = pbp[
         ["away_score_ffill", "home_score_ffill"]
     ].fillna(0)
@@ -527,20 +622,22 @@ def load_and_clean_pbp(
     pbp["score_backward"] = (pbp["d_away"] < 0) | (pbp["d_home"] < 0)
     pbp["multi_point_jump"] = (pbp["d_away"].abs() + pbp["d_home"].abs()) > 1
     pbp["one_point_increment"] = (
-        (pbp["d_away"] >= 0) & (pbp["d_home"] >= 0) & ((pbp["d_away"] + pbp["d_home"]) == 1)
+        (pbp["d_away"] >= 0)
+        & (pbp["d_home"] >= 0)
+        & ((pbp["d_away"] + pbp["d_home"]) == 1)
     )
 
-    pbp["event_family"] = canonical_event_family(pbp["event_text"], pbp["description_text"])
-    pbp["is_first_ball_kill_text"] = (
-        pbp["event_text"].str.contains(r"first ball kill", na=False)
-        | pbp["description_text"].str.contains(r"first ball kill", na=False)
+    pbp["event_family"] = canonical_event_family(
+        pbp["event_text"], pbp["description_text"]
     )
+    pbp["is_first_ball_kill_text"] = pbp["event_text"].str.contains(
+        r"first ball kill", na=False
+    ) | pbp["description_text"].str.contains(r"first ball kill", na=False)
     pbp["is_action_row"] = pbp["event_family"].ne("admin")
 
-    prev_end = (
-        pbp.groupby(["contestid", "set"], sort=False, observed=True)["one_point_increment"]
-        .shift(fill_value=False)
-    )
+    prev_end = pbp.groupby(["contestid", "set"], sort=False, observed=True)[
+        "one_point_increment"
+    ].shift(fill_value=False)
     pbp["rally_id"] = (
         prev_end.groupby([pbp["contestid"], pbp["set"]], sort=False)
         .cumsum()
@@ -549,7 +646,8 @@ def load_and_clean_pbp(
     )
     group_rally = ["contestid", "set", "rally_id"]
     pbp["row_in_rally"] = (
-        pbp.groupby(group_rally, sort=False, observed=True).cumcount().astype("int16") + 1
+        pbp.groupby(group_rally, sort=False, observed=True).cumcount().astype("int16")
+        + 1
     )
     pbp["action_seq"] = (
         pbp["is_action_row"]
@@ -571,7 +669,9 @@ def load_and_clean_pbp(
     return pbp
 
 
-def build_rally_tables(pbp: pd.DataFrame, season: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def build_rally_tables(
+    pbp: pd.DataFrame, season: str
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     # turn all the individual event rows into rally rows
     # event_table keeps the touch level data, rally_table is for win prob later
     group_cols = ["contestid", "set", "rally_id"]
@@ -583,7 +683,9 @@ def build_rally_tables(pbp: pd.DataFrame, season: str) -> tuple[pd.DataFrame, pd
         .sort_values(group_cols + ["file_row"], kind="mergesort")
         .groupby(group_cols, sort=False, observed=True)
         .first()
-        .reset_index()[group_cols + ["file_row", "actor_team", "actor_side", "player_clean"]]
+        .reset_index()[
+            group_cols + ["file_row", "actor_team", "actor_side", "player_clean"]
+        ]
         .rename(
             columns={
                 "file_row": "serve_row",
@@ -598,7 +700,10 @@ def build_rally_tables(pbp: pd.DataFrame, season: str) -> tuple[pd.DataFrame, pd
         pbp.loc[pbp["is_action_row"]]
         .sort_values(group_cols + ["file_row"], kind="mergesort")
         .groupby(group_cols, sort=False, observed=True)
-        .tail(1)[group_cols + ["file_row", "event_family", "actor_team", "actor_side", "player_clean"]]
+        .tail(1)[
+            group_cols
+            + ["file_row", "event_family", "actor_team", "actor_side", "player_clean"]
+        ]
         .rename(
             columns={
                 "file_row": "terminal_row",
@@ -625,7 +730,10 @@ def build_rally_tables(pbp: pd.DataFrame, season: str) -> tuple[pd.DataFrame, pd
             score_home_end=("home_score_ffill", "last"),
             rally_rows=("file_row", "size"),
             action_rows=("is_action_row", "sum"),
-            unresolved_actor_rows=("actor_team_source", lambda x: (x == "unresolved").sum()),
+            unresolved_actor_rows=(
+                "actor_team_source",
+                lambda x: (x == "unresolved").sum(),
+            ),
             any_backward_score=("score_backward", "any"),
             any_multi_point_jump=("multi_point_jump", "any"),
             any_non_numeric_score=("score_is_numeric", lambda x: (~x).any()),
@@ -635,9 +743,15 @@ def build_rally_tables(pbp: pd.DataFrame, season: str) -> tuple[pd.DataFrame, pd
         .merge(last_action, on=group_cols, how="left")
     )
 
-    rally_table["away_delta"] = rally_table["score_away_end"] - rally_table["score_away_start"]
-    rally_table["home_delta"] = rally_table["score_home_end"] - rally_table["score_home_start"]
-    rally_table["point_delta_total"] = rally_table["away_delta"].abs() + rally_table["home_delta"].abs()
+    rally_table["away_delta"] = (
+        rally_table["score_away_end"] - rally_table["score_away_start"]
+    )
+    rally_table["home_delta"] = (
+        rally_table["score_home_end"] - rally_table["score_home_start"]
+    )
+    rally_table["point_delta_total"] = (
+        rally_table["away_delta"].abs() + rally_table["home_delta"].abs()
+    )
     rally_table["point_winner_side"] = np.select(
         # normal rally should move exactly one team by one point
         # if it does not, mark unknown instead of pretending
@@ -646,7 +760,10 @@ def build_rally_tables(pbp: pd.DataFrame, season: str) -> tuple[pd.DataFrame, pd
         default="unknown",
     )
     rally_table["point_winner_team"] = np.select(
-        [rally_table["point_winner_side"].eq("home"), rally_table["point_winner_side"].eq("away")],
+        [
+            rally_table["point_winner_side"].eq("home"),
+            rally_table["point_winner_side"].eq("away"),
+        ],
         [rally_table["home_clean"], rally_table["away_clean"]],
         default=pd.NA,
     )
@@ -657,16 +774,31 @@ def build_rally_tables(pbp: pd.DataFrame, season: str) -> tuple[pd.DataFrame, pd
         .tail(1)[["contestid", "set", "score_home_end", "score_away_end"]]
         .copy()
     )
-    set_summary["home_set_win"] = (set_summary["score_home_end"] > set_summary["score_away_end"]).astype("int8")
-    set_summary["away_set_win"] = (set_summary["score_away_end"] > set_summary["score_home_end"]).astype("int8")
+    set_summary["home_set_win"] = (
+        set_summary["score_home_end"] > set_summary["score_away_end"]
+    ).astype("int8")
+    set_summary["away_set_win"] = (
+        set_summary["score_away_end"] > set_summary["score_home_end"]
+    ).astype("int8")
     set_summary = set_summary.sort_values(["contestid", "set"], kind="mergesort")
-    home_cum_sets = set_summary.groupby("contestid", sort=False, observed=True)["home_set_win"].cumsum()
-    away_cum_sets = set_summary.groupby("contestid", sort=False, observed=True)["away_set_win"].cumsum()
-    set_summary["home_sets_before"] = (home_cum_sets - set_summary["home_set_win"]).astype("int16")
-    set_summary["away_sets_before"] = (away_cum_sets - set_summary["away_set_win"]).astype("int16")
+    home_cum_sets = set_summary.groupby("contestid", sort=False, observed=True)[
+        "home_set_win"
+    ].cumsum()
+    away_cum_sets = set_summary.groupby("contestid", sort=False, observed=True)[
+        "away_set_win"
+    ].cumsum()
+    set_summary["home_sets_before"] = (
+        home_cum_sets - set_summary["home_set_win"]
+    ).astype("int16")
+    set_summary["away_sets_before"] = (
+        away_cum_sets - set_summary["away_set_win"]
+    ).astype("int16")
     contest_result = (
         set_summary.groupby("contestid", observed=True)
-        .agg(home_sets_total=("home_set_win", "sum"), away_sets_total=("away_set_win", "sum"))
+        .agg(
+            home_sets_total=("home_set_win", "sum"),
+            away_sets_total=("away_set_win", "sum"),
+        )
         .reset_index()
     )
     contest_result["home_match_win"] = (
@@ -674,21 +806,35 @@ def build_rally_tables(pbp: pd.DataFrame, season: str) -> tuple[pd.DataFrame, pd
     ).astype("int8")
 
     rally_table = rally_table.merge(
-        set_summary[["contestid", "set", "home_set_win", "away_set_win", "home_sets_before", "away_sets_before"]],
+        set_summary[
+            [
+                "contestid",
+                "set",
+                "home_set_win",
+                "away_set_win",
+                "home_sets_before",
+                "away_sets_before",
+            ]
+        ],
         on=["contestid", "set"],
         how="left",
     ).merge(contest_result, on="contestid", how="left")
 
-    last_rally = rally_table.groupby(["contestid", "set"], observed=True)["rally_id"].transform("max")
+    last_rally = rally_table.groupby(["contestid", "set"], observed=True)[
+        "rally_id"
+    ].transform("max")
     rally_table["is_set_terminal"] = rally_table["rally_id"].eq(last_rally)
     rally_table["home_sets_after"] = (
-        rally_table["home_sets_before"] + (rally_table["is_set_terminal"] & rally_table["home_set_win"].eq(1))
+        rally_table["home_sets_before"]
+        + (rally_table["is_set_terminal"] & rally_table["home_set_win"].eq(1))
     ).astype("int16")
     rally_table["away_sets_after"] = (
-        rally_table["away_sets_before"] + (rally_table["is_set_terminal"] & rally_table["away_set_win"].eq(1))
+        rally_table["away_sets_before"]
+        + (rally_table["is_set_terminal"] & rally_table["away_set_win"].eq(1))
     ).astype("int16")
     rally_table["set_after"] = (
-        rally_table["set"].astype("int16") + rally_table["is_set_terminal"].astype("int16")
+        rally_table["set"].astype("int16")
+        + rally_table["is_set_terminal"].astype("int16")
     ).astype("int16")
     rally_table["score_home_after_state"] = np.where(
         rally_table["is_set_terminal"], 0, rally_table["score_home_end"]
@@ -767,7 +913,9 @@ def build_first_ball_tables(
         .sort_values(group_cols + ["file_row"], kind="mergesort")
         .groupby(group_cols, sort=False, observed=True)
         .first()
-        .reset_index()[group_cols + ["file_row", "actor_team", "player_clean", "event_family"]]
+        .reset_index()[
+            group_cols + ["file_row", "actor_team", "player_clean", "event_family"]
+        ]
         .rename(
             columns={
                 "file_row": "reception_row",
@@ -780,8 +928,10 @@ def build_first_ball_tables(
     stage = event_table.merge(first_reception, on=group_cols, how="left")
     after_reception = stage["file_row"] > stage["reception_row"]
     same_team = stage["actor_team"].eq(stage["receiving_team"])
-    opp_team = stage["actor_team"].notna() & stage["receiving_team"].notna() & stage["actor_team"].ne(
-        stage["receiving_team"]
+    opp_team = (
+        stage["actor_team"].notna()
+        & stage["receiving_team"].notna()
+        & stage["actor_team"].ne(stage["receiving_team"])
     )
     attackish = stage["event_family"].isin(["attack", "kill", "attack_error"])
     core_action = stage["event_family"].isin(
@@ -862,10 +1012,16 @@ def build_first_ball_tables(
         .merge(first_opp_action, on=group_cols, how="left")
         .merge(first_kill, on=group_cols, how="left")
     )
-    rally_pass["reception_error"] = rally_pass["reception_event_family"].eq("reception_error")
-    rally_pass["receive_point_win"] = rally_pass["point_winner_team"].fillna("").astype("string").eq(
-        rally_pass["receiving_team"].fillna("").astype("string")
-    ) & rally_pass["receiving_team"].notna()
+    rally_pass["reception_error"] = rally_pass["reception_event_family"].eq(
+        "reception_error"
+    )
+    rally_pass["receive_point_win"] = (
+        rally_pass["point_winner_team"]
+        .fillna("")
+        .astype("string")
+        .eq(rally_pass["receiving_team"].fillna("").astype("string"))
+        & rally_pass["receiving_team"].notna()
+    )
     rally_pass["first_ball_attack"] = (
         rally_pass["first_attack_row"].notna()
         & ~rally_pass["reception_error"]
@@ -882,13 +1038,22 @@ def build_first_ball_tables(
         & ~rally_pass["reception_error"]
         & (
             rally_pass["first_opp_action_row"].isna()
-            | (rally_pass["first_same_team_kill_row"] < rally_pass["first_opp_action_row"])
+            | (
+                rally_pass["first_same_team_kill_row"]
+                < rally_pass["first_opp_action_row"]
+            )
         )
     )
 
     first_ball_player_contest = (
-        rally_pass.loc[rally_pass["passer_player_clean"].notna() & rally_pass["receiving_team"].notna()]
-        .groupby(["season", "contestid", "receiving_team", "passer_player_clean"], observed=True)
+        rally_pass.loc[
+            rally_pass["passer_player_clean"].notna()
+            & rally_pass["receiving_team"].notna()
+        ]
+        .groupby(
+            ["season", "contestid", "receiving_team", "passer_player_clean"],
+            observed=True,
+        )
         .agg(
             fb_receptions=("rally_id", "size"),
             fb_clean_receptions=("reception_error", lambda x: (~x).sum()),
@@ -898,7 +1063,12 @@ def build_first_ball_tables(
             fb_receive_point_wins=("receive_point_win", "sum"),
         )
         .reset_index()
-        .rename(columns={"receiving_team": "team_clean", "passer_player_clean": "player_clean"})
+        .rename(
+            columns={
+                "receiving_team": "team_clean",
+                "passer_player_clean": "player_clean",
+            }
+        )
     )
     for num, den, out in [
         ("fb_attacks", "fb_receptions", "fb_attack_rate"),
@@ -907,17 +1077,28 @@ def build_first_ball_tables(
         ("fb_receive_point_wins", "fb_receptions", "fb_receive_point_win_rate"),
     ]:
         first_ball_player_contest[out] = (
-            first_ball_player_contest[num] / first_ball_player_contest[den].replace(0, np.nan)
+            first_ball_player_contest[num]
+            / first_ball_player_contest[den].replace(0, np.nan)
         ).fillna(0.0)
 
     display_lookup = player_master[
-        ["season", "team_clean", "player_clean", "player", "team", "role_family", "player_uid"]
+        [
+            "season",
+            "team_clean",
+            "player_clean",
+            "player",
+            "team",
+            "role_family",
+            "player_uid",
+        ]
     ].drop_duplicates()
     first_ball_player_contest = first_ball_player_contest.merge(
         display_lookup, on=["season", "team_clean", "player_clean"], how="left"
     )
     first_ball_player_season = (
-        first_ball_player_contest.groupby(["season", "team_clean", "player_clean"], observed=True)
+        first_ball_player_contest.groupby(
+            ["season", "team_clean", "player_clean"], observed=True
+        )
         .agg(
             fb_receptions=("fb_receptions", "sum"),
             fb_clean_receptions=("fb_clean_receptions", "sum"),
@@ -929,10 +1110,12 @@ def build_first_ball_tables(
         .reset_index()
     )
     first_ball_player_season["fb_attack_rate"] = (
-        first_ball_player_season["fb_attacks"] / first_ball_player_season["fb_receptions"].replace(0, np.nan)
+        first_ball_player_season["fb_attacks"]
+        / first_ball_player_season["fb_receptions"].replace(0, np.nan)
     ).fillna(0.0)
     first_ball_player_season["fb_kill_rate"] = (
-        first_ball_player_season["fb_kills"] / first_ball_player_season["fb_receptions"].replace(0, np.nan)
+        first_ball_player_season["fb_kills"]
+        / first_ball_player_season["fb_receptions"].replace(0, np.nan)
     ).fillna(0.0)
     first_ball_player_season["fb_reception_error_rate"] = (
         first_ball_player_season["fb_reception_errors"]
@@ -959,10 +1142,12 @@ def build_player_match_enriched(
     out = player_match.copy()
     out = out.merge(
         team_strength[["season", "team_clean", "team_strength_index"]],
-        on=["season","team_clean"],
+        on=["season", "team_clean"],
         how="left",
     )
-    opp_strength = team_strength[["season", "team_clean", "team_strength_index"]].rename(
+    opp_strength = team_strength[
+        ["season", "team_clean", "team_strength_index"]
+    ].rename(
         columns={"team_clean": "opp_clean", "team_strength_index": "opp_strength_index"}
     )
     out = out.merge(opp_strength, on=["season", "opp_clean"], how="left")
@@ -987,7 +1172,9 @@ def build_player_match_enriched(
             "fb_receive_point_win_rate",
         ]
     ].copy()
-    first_ball_small["contestid"] = pd.to_numeric(first_ball_small["contestid"], errors="coerce").astype("Int64")
+    first_ball_small["contestid"] = pd.to_numeric(
+        first_ball_small["contestid"], errors="coerce"
+    ).astype("Int64")
     out = out.merge(
         first_ball_small,
         on=["season", "contestid", "team_clean", "player_clean"],
@@ -1083,7 +1270,9 @@ def build_player_season_features(
         ]
     ].copy()
     features = player_master.merge(
-        agg.drop(columns=["player", "team", "role_family", "player_uid"], errors="ignore"),
+        agg.drop(
+            columns=["player", "team", "role_family", "player_uid"], errors="ignore"
+        ),
         on=["season", "team_clean", "player_clean"],
         how="left",
     ).merge(fb, on=["season", "team_clean", "player_clean"], how="left")
@@ -1113,25 +1302,27 @@ def build_player_season_features(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Create cleaned volleyball data products.")
+    parser = argparse.ArgumentParser(
+        description="Create cleaned volleyball data products."
+    )
     parser.add_argument("--season", default=DEFAULT_SEASON)
     parser.add_argument("--repo-root", type=Path, default=None)
-    parser.add_argument("--save-event-table", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--save-event-table", action=argparse.BooleanOptionalAction, default=True
+    )
     return parser.parse_args()
-
-
 
 
 def main() -> None:
     # full rebuild every time
     # slower, but then old output files dont sneak into the project
     args = parse_args()
-    repo_root = args.repo_root.resolve() if args.repo_root else find_repo_root()
-    data_dir = repo_root / "Data" / "original"
-    out_dir = repo_root / "Data" / "preprocessed"
+    PACKAGE_ROOT = Path(Git(root_dir=".").root_dir)
+    data_dir = PACKAGE_ROOT / "Data" / "original"
+    out_dir = PACKAGE_ROOT / "Data" / "preprocessed"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"repo_root: {repo_root}")
+    print(f"repo_root: {PACKAGE_ROOT}")
     print(f"season   : {args.season}")
     print(f"data_dir : {data_dir}")
     print(f"out_dir  : {out_dir}")
@@ -1151,8 +1342,8 @@ def main() -> None:
 
     contest_master, rally_table, event_table = build_rally_tables(pbp, args.season)
     del pbp
-    rally_pass, first_ball_player_contest, first_ball_player_season = build_first_ball_tables(
-        event_table, rally_table, player_master, args.season
+    rally_pass, first_ball_player_contest, first_ball_player_season = (
+        build_first_ball_tables(event_table, rally_table, player_master, args.season)
     )
     player_match_enriched = build_player_match_enriched(
         player_match, team_strength, first_ball_player_contest
@@ -1166,8 +1357,16 @@ def main() -> None:
     save_csv(contest_master, out_dir, f"contest_master_{args.season}")
     save_csv(rally_table, out_dir, f"rally_table_{args.season}")
     save_csv(rally_pass, out_dir, f"rally_pass_{args.season}")
-    save_csv(first_ball_player_contest, out_dir, f"first_ball_pass_player_contest_{args.season}")
-    save_csv(first_ball_player_season, out_dir, f"first_ball_pass_player_season_{args.season}")
+    save_csv(
+        first_ball_player_contest,
+        out_dir,
+        f"first_ball_pass_player_contest_{args.season}",
+    )
+    save_csv(
+        first_ball_player_season,
+        out_dir,
+        f"first_ball_pass_player_season_{args.season}",
+    )
     save_csv(player_match_enriched, out_dir, f"player_match_enriched_{args.season}")
     save_csv(player_season_features, out_dir, f"player_season_features_{args.season}")
     if args.save_event_table:

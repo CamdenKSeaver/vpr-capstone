@@ -6,6 +6,7 @@ import math
 import os
 import pickle
 from pathlib import Path
+from scmrepo.git import Git
 
 import numpy as np
 import pandas as pd
@@ -54,15 +55,6 @@ WP_NUMERIC_FEATURES = [
     "is_deuce_or_later",
 ]
 WP_CATEGORICAL_FEATURES = ["server_side"]
-
-
-def find_repo_root() -> Path:
-    here = Path.cwd().resolve()
-
-    for candidate in [here, *here.parents]:
-        if (candidate / "Data" / "preprocessed").exists():
-            return candidate
-    return here
 
 
 def save_csv(df: pd.DataFrame, out_dir: Path, stem: str) -> Path:
@@ -1251,12 +1243,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    repo_root = args.repo_root.resolve() if args.repo_root else find_repo_root()
-    data_dir = repo_root / "Data" / "preprocessed"
-    out_dir = repo_root / "Data" / "model_outputs"
+    PACKAGE_ROOT = Path(Git(root_dir=".").root_dir)
+    data_dir = PACKAGE_ROOT / "Data" / "preprocessed"
+    out_dir = PACKAGE_ROOT / "Data" / "model_outputs"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"repo_root: {repo_root}")
+    print(f"repo_root: {PACKAGE_ROOT}")
     print(f"season   : {args.season}")
     print(f"data_dir : {data_dir}")
     print(f"out_dir  : {out_dir}")
