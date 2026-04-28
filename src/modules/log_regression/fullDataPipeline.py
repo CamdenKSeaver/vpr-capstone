@@ -1,26 +1,35 @@
-"""Full data pipeline for the NCAA womens volleyball project.
+"""Build cleaned season tables from the raw NCAA women's volleyball source files.
 
-Takes the raw csvs and makes the cleaned csvs that model.py uses.
-This is kind of a big file, but it is nice for the group because there is
-one obvious thing to run when the data needs to be rebuilt.
+This module turns roster, match, and play-by-play downloads into the
+preprocessed CSVs used by the ranking model.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import re
 from pathlib import Path
-import requests
 from scmrepo.git import Git
 
 import numpy as np
 import pandas as pd
 
-DEFAULT_SEASON = os.environ.get("VPR_SEASON", "2025-2026")
+try:
+    from .season_support import (
+        DEFAULT_SEASON,
+        add_season_args,
+        ensure_season_source_files,
+        resolve_requested_seasons,
+    )
+except ImportError:
+    from season_support import (
+        DEFAULT_SEASON,
+        add_season_args,
+        ensure_season_source_files,
+        resolve_requested_seasons,
+    )
 
-# only keeping the pbp columns I actually use
-# the raw file has a bunch more but it just makes this take forever
+# Keep only the play-by-play columns that feed the later joins and rally logic.
 PBP_DESIRED_COLS = [
     "date",
     "contestid",
@@ -52,9 +61,8 @@ PBP_DTYPE_MAP = {
 }
 
 ROLE_MAP = {
-    # position labels are kinda all over the place
-    # this gets them into the buckets we rank on later
-    # there are definetly weird DS/OH type players, model.py checks again too
+    # Position labels vary by source file, so normalize them into the ranking
+    # buckets first and let the model layer make any final role adjustments.
     "s": "setter",
     "setter": "setter",
     "mb": "middle",
@@ -76,8 +84,8 @@ ROLE_MAP = {
 }
 
 MANUAL_TEAM_ALIASES = {
-    # random team name stuff I had to hand fix while checking joins
-    # if a team is missing later this is probaly where I would look first
+    # Manual fixes for school-name variants that appear across rosters, match
+    # tables, and play-by-play feeds.
     "app state": "app state",
     "arkansas state": "arkansas st.",
     "cal baptist": "california baptist",
@@ -101,8 +109,7 @@ MANUAL_TEAM_ALIASES = {
 
 
 def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    # make columns not annoying before doing joins
-    # some files say hitpct and some say hit_pct etc
+    """Normalize column names so the different source files can share logic."""
     rename_map = {
         c: re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", str(c).strip().lower())).strip(
             "_"
@@ -127,8 +134,8 @@ def coalesce_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
     cols = pd.Series(df.columns)
     dup_names = cols[cols.duplicated(keep=False)].unique().tolist()
     for name in dup_names:
-        # this can happen after renaming columns
-        # I am assuming the left most non empty value is the safest
+        # If two cleaned columns collapse to the same name, keep the left-most
+        # non-null value on each row.
         same = df.loc[:, df.columns == name]
         merged = same.bfill(axis=1).iloc[:, 0]
         df = df.drop(columns=name)
@@ -137,8 +144,8 @@ def coalesce_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def clean_series(s: pd.Series) -> pd.Series:
-    # clean names pretty hard so roster/match/pbp will actually join
-    # it does lose accents which is not ideal but the joins work better
+    # Normalize names hard enough that roster, match, and play-by-play tables
+    # can join reliably across inconsistent source formatting.
     s = s.fillna("").astype("string")
     s = s.str.normalize("NFKD").str.encode("ascii", errors="ignore").str.decode("utf-8")
     s = s.str.lower().str.replace("&", " and ", regex=False)
@@ -157,8 +164,8 @@ def clean_team_series(s: pd.Series) -> pd.Series:
 
 def strip_opponent_noise(s: pd.Series) -> pd.Series:
     s = clean_team_series(s)
-    # opponent fields have @, rankings, tourney names, notes, etc
-    # good for people reading it, bad for matching teams
+    # Opponent fields often include rankings, venues, and tournament labels that
+    # are useful for display but noisy for team matching.
     s = s.str.replace(r"^@\s*", "", regex=True)
     s = s.str.replace(r"\b(at)\b\s+", "", regex=True)
     s = s.str.replace(r"#\d+", " ", regex=True)
@@ -178,8 +185,8 @@ def canonicalize_vs_known_teams(
     manual_aliases: dict[str, str] | None = None,
 ) -> pd.Series:
     """Clean team names against the teams we already know."""
-    # try the hand fixes first, then exact names, then the compact version
-    # I would rather leave something messy than match to the wrong team
+    # Prefer exact and manual matches first. It is safer to leave a school
+    # unresolved than to force a bad canonical match.
     manual_aliases = manual_aliases or {}
     raw = strip_opponent_noise(raw_series)
     canonical_set = set(canonical_teams)
@@ -286,35 +293,29 @@ def canonical_event_family(
     return family.fillna("admin")
 
 
-def load_aggregate_files(
-    data_dir: Path, season: str
+def load_season_source_files(
+    data_dir: Path,
+    season: str,
+    *,
+    download_missing: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    # load the normal roster / box score files first
-    # pbp is huge so I deal with it later
+    # use the upstream season files directly
+    # this avoids relying on one local master file to cover every season forever
+    source_files = ensure_season_source_files(
+        data_dir,
+        season,
+        include_pbp=False,
+        download_missing=download_missing,
+    )
     players = coalesce_duplicate_columns(
-        standardize_columns(pd.read_csv(data_dir / "all_players.csv", low_memory=False))
+        standardize_columns(pd.read_csv(source_files["players"], low_memory=False))
     )
     player_match = coalesce_duplicate_columns(
-        standardize_columns(
-            pd.read_csv(
-                data_dir / "women_d1_player_match_2020_2025_master.csv",
-                low_memory=False,
-            )
-        )
+        standardize_columns(pd.read_csv(source_files["player_match"], low_memory=False))
     )
     team_match = coalesce_duplicate_columns(
-        standardize_columns(
-            pd.read_csv(
-                data_dir / "women_d1_team_match_2020_2025_master.csv", low_memory=False
-            )
-        )
+        standardize_columns(pd.read_csv(source_files["team_match"], low_memory=False))
     )
-
-    players = players.loc[players["season"].astype("string").eq(season)].copy()
-    player_match = player_match.loc[
-        player_match["season"].astype("string").eq(season)
-    ].copy()
-    team_match = team_match.loc[team_match["season"].astype("string").eq(season)].copy()
 
     if "player" in players.columns:
         bad_player_labels = {"team", "totals", "opponent totals", "opponent"}
@@ -485,20 +486,40 @@ def build_team_strength(
     return team_strength.merge(team_names, on="team_clean", how="left")
 
 
-def download_pbp_file(data_dir: Path, season_year: str) -> Path:
-    pbp_path = data_dir / f"wvb_pbp_div1_{season_year}.csv"
-    if pbp_path.exists():
-        return pbp_path
+def coerce_pbp_contest_ids(pbp: pd.DataFrame) -> pd.Series:
+    # newer pbp files already ship with contest ids
+    raw_ids = pd.to_numeric(
+        pbp.get("contestid", pd.Series(pd.NA, index=pbp.index, dtype="string")),
+        errors="coerce",
+    )
+    if raw_ids.notna().all():
+        return raw_ids.astype("Int64")
 
-    url = f"https://media.githubusercontent.com/media/JeffreyRStevens/ncaavolleyballr/refs/heads/main/data-csv/wvb_pbp_div1_{season_year}.csv"
-    r = requests.get(url, stream=True)
-    r.raise_for_status()
+    # older pbp files do not, so rebuild stable match blocks from row order
+    key_frame = pd.DataFrame(index=pbp.index)
+    for col in ["date", "home_team", "away_team"]:
+        vals = pbp.get(col, pd.Series("", index=pbp.index, dtype="string"))
+        key_frame[col] = (
+            vals.fillna("").astype("string").str.strip().replace("", pd.NA).ffill()
+        )
 
-    with open(pbp_path, "wb") as f:
-        for chunk in r.iter_content(chunk_size=1 << 20):
-            f.write(chunk)
+    set_numbers = pd.to_numeric(pbp.get("set"), errors="coerce")
+    key_changed = (key_frame != key_frame.shift()).any(axis=1)
+    set_reset = set_numbers.lt(set_numbers.shift()) & set_numbers.notna()
+    new_contest = (key_changed | set_reset).fillna(False)
+    if len(new_contest):
+        new_contest.iloc[0] = True
 
-    return pbp_path
+    synthetic_ids = new_contest.cumsum().astype("Int64")
+    if raw_ids.notna().any():
+        block_lookup = (
+            pd.DataFrame({"synthetic_id": synthetic_ids, "contestid": raw_ids})
+            .dropna(subset=["contestid"])
+            .drop_duplicates("synthetic_id")
+            .set_index("synthetic_id")["contestid"]
+        )
+        return synthetic_ids.map(block_lookup).fillna(synthetic_ids).astype("Int64")
+    return synthetic_ids
 
 
 def load_and_clean_pbp(
@@ -506,14 +527,18 @@ def load_and_clean_pbp(
     player_master: pd.DataFrame,
     canonical_teams: list[str],
     season: str,
+    *,
+    download_missing: bool = True,
 ) -> pd.DataFrame:
     # this is the slow part
     # pbp is big, so dont do random stuff here or it gets hard to debug
-    season_year = season.split("-")[0] # "2025-2026" to "2025"
-    pbp_path = data_dir / f"wvb_pbp_div1_{season_year}.csv"
-    if not pbp_path.exists():
-        print("Downloading missing pbp file...")
-        pbp_path = download_pbp_file(data_dir, season_year)
+    source_files = ensure_season_source_files(
+        data_dir,
+        season,
+        include_pbp=True,
+        download_missing=download_missing,
+    )
+    pbp_path = source_files["pbp"]
 
     print(f"loading play-by-play: {pbp_path}")
     pbp_raw = load_csv_flexible(pbp_path, PBP_DESIRED_COLS, PBP_DTYPE_MAP)
@@ -523,8 +548,8 @@ def load_and_clean_pbp(
     pbp = standardize_columns(pbp)
     pbp["season"] = season
     pbp["file_row"] = np.arange(len(pbp), dtype="int64")
-    pbp["contestid"] = pd.to_numeric(pbp["contestid"], errors="coerce").astype("Int64")
     pbp["set"] = pd.to_numeric(pbp["set"], errors="coerce").astype("Int16")
+    pbp["contestid"] = coerce_pbp_contest_ids(pbp)
     pbp = pbp.dropna(subset=["contestid", "set"]).copy()
 
     for col in [
@@ -960,12 +985,15 @@ def build_first_ball_tables(
         .sort_values(group_cols + ["file_row"], kind="mergesort")
         .groupby(group_cols, sort=False, observed=True)
         .first()
-        .reset_index()[group_cols + ["file_row", "player_clean", "event_family"]]
+        .reset_index()[
+            group_cols + ["file_row", "player_clean", "event_family", "role_family"]
+        ]
         .rename(
             columns={
                 "file_row": "first_attack_row",
                 "player_clean": "first_attack_player_clean",
                 "event_family": "first_attack_event_family",
+                "role_family": "first_attack_role_family",
             }
         )
     )
@@ -1044,6 +1072,10 @@ def build_first_ball_tables(
             )
         )
     )
+    rally_pass["first_ball_middle_attack"] = (
+        rally_pass["first_ball_attack"]
+        & rally_pass["first_attack_role_family"].fillna("").eq("middle")
+    )
 
     first_ball_player_contest = (
         rally_pass.loc[
@@ -1060,6 +1092,7 @@ def build_first_ball_tables(
             fb_reception_errors=("reception_error", "sum"),
             fb_attacks=("first_ball_attack", "sum"),
             fb_kills=("first_ball_kill", "sum"),
+            fb_middle_attacks=("first_ball_middle_attack", "sum"),
             fb_receive_point_wins=("receive_point_win", "sum"),
         )
         .reset_index()
@@ -1073,6 +1106,7 @@ def build_first_ball_tables(
     for num, den, out in [
         ("fb_attacks", "fb_receptions", "fb_attack_rate"),
         ("fb_kills", "fb_receptions", "fb_kill_rate"),
+        ("fb_middle_attacks", "fb_receptions", "fb_middle_attack_rate"),
         ("fb_reception_errors", "fb_receptions", "fb_reception_error_rate"),
         ("fb_receive_point_wins", "fb_receptions", "fb_receive_point_win_rate"),
     ]:
@@ -1105,6 +1139,7 @@ def build_first_ball_tables(
             fb_reception_errors=("fb_reception_errors", "sum"),
             fb_attacks=("fb_attacks", "sum"),
             fb_kills=("fb_kills", "sum"),
+            fb_middle_attacks=("fb_middle_attacks", "sum"),
             fb_receive_point_wins=("fb_receive_point_wins", "sum"),
         )
         .reset_index()
@@ -1115,6 +1150,10 @@ def build_first_ball_tables(
     ).fillna(0.0)
     first_ball_player_season["fb_kill_rate"] = (
         first_ball_player_season["fb_kills"]
+        / first_ball_player_season["fb_receptions"].replace(0, np.nan)
+    ).fillna(0.0)
+    first_ball_player_season["fb_middle_attack_rate"] = (
+        first_ball_player_season["fb_middle_attacks"]
         / first_ball_player_season["fb_receptions"].replace(0, np.nan)
     ).fillna(0.0)
     first_ball_player_season["fb_reception_error_rate"] = (
@@ -1165,9 +1204,11 @@ def build_player_match_enriched(
             "fb_reception_errors",
             "fb_attacks",
             "fb_kills",
+            "fb_middle_attacks",
             "fb_receive_point_wins",
             "fb_attack_rate",
             "fb_kill_rate",
+            "fb_middle_attack_rate",
             "fb_reception_error_rate",
             "fb_receive_point_win_rate",
         ]
@@ -1187,12 +1228,14 @@ def build_player_match_enriched(
         "fb_reception_errors",
         "fb_attacks",
         "fb_kills",
+        "fb_middle_attacks",
         "fb_receive_point_wins",
     ]:
         out[col] = out[col].fillna(0).astype("int32")
     for col in [
         "fb_attack_rate",
         "fb_kill_rate",
+        "fb_middle_attack_rate",
         "fb_reception_error_rate",
         "fb_receive_point_win_rate",
     ]:
@@ -1262,9 +1305,11 @@ def build_player_season_features(
             "fb_reception_errors",
             "fb_attacks",
             "fb_kills",
+            "fb_middle_attacks",
             "fb_receive_point_wins",
             "fb_attack_rate",
             "fb_kill_rate",
+            "fb_middle_attack_rate",
             "fb_reception_error_rate",
             "fb_receive_point_win_rate",
         ]
@@ -1286,6 +1331,7 @@ def build_player_season_features(
         "fb_reception_errors",
         "fb_attacks",
         "fb_kills",
+        "fb_middle_attacks",
         "fb_receive_point_wins",
     ]:
         if col in features.columns:
@@ -1293,6 +1339,7 @@ def build_player_season_features(
     for col in [
         "fb_attack_rate",
         "fb_kill_rate",
+        "fb_middle_attack_rate",
         "fb_reception_error_rate",
         "fb_receive_point_win_rate",
     ]:
@@ -1305,7 +1352,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Create cleaned volleyball data products."
     )
-    parser.add_argument("--season", default=DEFAULT_SEASON)
+    add_season_args(parser)
     parser.add_argument("--repo-root", type=Path, default=None)
     parser.add_argument(
         "--save-event-table", action=argparse.BooleanOptionalAction, default=True
@@ -1313,21 +1360,28 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    # full rebuild every time
-    # slower, but then old output files dont sneak into the project
-    args = parse_args()
-    PACKAGE_ROOT = Path(Git(root_dir=".").root_dir)
-    data_dir = PACKAGE_ROOT / "Data" / "original"
-    out_dir = PACKAGE_ROOT / "Data" / "preprocessed"
+def run_for_season(
+    season: str,
+    *,
+    repo_root: Path | None = None,
+    save_event_table: bool = True,
+    download_missing: bool = True,
+) -> None:
+    package_root = repo_root or Path(Git(root_dir=".").root_dir)
+    data_dir = package_root / "Data" / "original"
+    out_dir = package_root / "Data" / "preprocessed"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"repo_root: {PACKAGE_ROOT}")
-    print(f"season   : {args.season}")
+    print(f"repo_root: {package_root}")
+    print(f"season   : {season}")
     print(f"data_dir : {data_dir}")
     print(f"out_dir  : {out_dir}")
 
-    players, player_match, team_match = load_aggregate_files(data_dir, args.season)
+    players, player_match, team_match = load_season_source_files(
+        data_dir,
+        season,
+        download_missing=download_missing,
+    )
     player_master = build_player_master(players)
     player_match, team_match, canonical_team_df = prepare_match_tables(
         player_match, team_match, player_master
@@ -1337,13 +1391,14 @@ def main() -> None:
         data_dir,
         player_master,
         canonical_team_df["team_clean"].dropna().tolist(),
-        args.season,
+        season,
+        download_missing=download_missing,
     )
 
-    contest_master, rally_table, event_table = build_rally_tables(pbp, args.season)
+    contest_master, rally_table, event_table = build_rally_tables(pbp, season)
     del pbp
     rally_pass, first_ball_player_contest, first_ball_player_season = (
-        build_first_ball_tables(event_table, rally_table, player_master, args.season)
+        build_first_ball_tables(event_table, rally_table, player_master, season)
     )
     player_match_enriched = build_player_match_enriched(
         player_match, team_strength, first_ball_player_contest
@@ -1352,25 +1407,48 @@ def main() -> None:
         player_master, player_match_enriched, first_ball_player_season
     )
 
-    save_csv(player_master, out_dir, f"player_master_{args.season}")
-    save_csv(team_strength, out_dir, f"team_strength_{args.season}")
-    save_csv(contest_master, out_dir, f"contest_master_{args.season}")
-    save_csv(rally_table, out_dir, f"rally_table_{args.season}")
-    save_csv(rally_pass, out_dir, f"rally_pass_{args.season}")
+    save_csv(player_master, out_dir, f"player_master_{season}")
+    save_csv(team_strength, out_dir, f"team_strength_{season}")
+    save_csv(contest_master, out_dir, f"contest_master_{season}")
+    save_csv(rally_table, out_dir, f"rally_table_{season}")
+    save_csv(rally_pass, out_dir, f"rally_pass_{season}")
     save_csv(
         first_ball_player_contest,
         out_dir,
-        f"first_ball_pass_player_contest_{args.season}",
+        f"first_ball_pass_player_contest_{season}",
     )
     save_csv(
         first_ball_player_season,
         out_dir,
-        f"first_ball_pass_player_season_{args.season}",
+        f"first_ball_pass_player_season_{season}",
     )
-    save_csv(player_match_enriched, out_dir, f"player_match_enriched_{args.season}")
-    save_csv(player_season_features, out_dir, f"player_season_features_{args.season}")
-    if args.save_event_table:
-        save_csv(event_table, out_dir, f"event_table_{args.season}")
+    save_csv(player_match_enriched, out_dir, f"player_match_enriched_{season}")
+    save_csv(player_season_features, out_dir, f"player_season_features_{season}")
+    if save_event_table:
+        save_csv(event_table, out_dir, f"event_table_{season}")
+
+
+def main() -> None:
+    # full rebuild every time
+    # slower, but then old output files dont sneak into the project
+    args = parse_args()
+    package_root = Path(Git(root_dir=".").root_dir)
+    data_dir = package_root / "Data" / "original"
+    seasons = resolve_requested_seasons(
+        season=args.season,
+        seasons=args.seasons,
+        season_range=args.season_range,
+        all_seasons=args.all_seasons,
+        data_dir=data_dir,
+        download_missing=args.download_missing,
+    )
+    for season in seasons:
+        run_for_season(
+            season,
+            repo_root=package_root,
+            save_event_table=args.save_event_table,
+            download_missing=args.download_missing,
+        )
 
 
 if __name__ == "__main__":
