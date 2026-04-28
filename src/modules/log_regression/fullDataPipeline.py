@@ -3,31 +3,23 @@
 This module turns roster, match, and play-by-play downloads into the
 preprocessed CSVs used by the ranking model.
 """
-
 from __future__ import annotations
+import sys
+from scmrepo.git import Git
+from pathlib import Path
 
+ROOT = Path(Git(root_dir=".").root_dir) / "src" / "modules"
+sys.path.append(str(ROOT))
 import argparse
 import re
-from pathlib import Path
-from scmrepo.git import Git
-
 import numpy as np
 import pandas as pd
-
-try:
-    from .season_support import (
-        DEFAULT_SEASON,
-        add_season_args,
-        ensure_season_source_files,
-        resolve_requested_seasons,
-    )
-except ImportError:
-    from season_support import (
-        DEFAULT_SEASON,
-        add_season_args,
-        ensure_season_source_files,
-        resolve_requested_seasons,
-    )
+from log_regression.season_support import (
+    DEFAULT_SEASON,
+    add_season_args,
+    ensure_season_source_files,
+    resolve_requested_seasons,
+)
 
 # Keep only the play-by-play columns that feed the later joins and rally logic.
 PBP_DESIRED_COLS = [

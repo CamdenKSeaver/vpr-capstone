@@ -1,24 +1,16 @@
 from __future__ import annotations
-
-import argparse
+import sys
+from scmrepo.git import Git
 from pathlib import Path
 
-from scmrepo.git import Git
+ROOT = Path(Git(root_dir=".").root_dir) / "src" / "modules"
+sys.path.append(str(ROOT))
 
-try:
-    from .baselineModel import (
-        combine_model_outputs,
-        run_for_season as run_model_for_season,
-    )
-    from .fullDataPipeline import run_for_season as run_preprocess_for_season
-    from .season_support import add_season_args, resolve_requested_seasons
-except ImportError:
-    from baselineModel import (
-        combine_model_outputs,
-        run_for_season as run_model_for_season,
-    )
-    from fullDataPipeline import run_for_season as run_preprocess_for_season
-    from season_support import add_season_args, resolve_requested_seasons
+from log_regression.baselineModel import combine_model_outputs
+from log_regression.baselineModel import run_for_season as run_model_for_season
+from log_regression.fullDataPipeline import run_for_season as run_preprocess_for_season
+from log_regression.season_support import add_season_args, resolve_requested_seasons
+import argparse
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(

@@ -1,10 +1,12 @@
 from __future__ import annotations
+import sys
+from scmrepo.git import Git
+from pathlib import Path
+ROOT = Path(Git(root_dir=".").root_dir) / "src" / "modules"
+sys.path.append(str(ROOT))
 
 import argparse
 import math
-from pathlib import Path
-
-from scmrepo.git import Git
 
 import numpy as np
 import pandas as pd
@@ -15,13 +17,8 @@ from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
-
-try:
-    from .fullDataPipeline import run_for_season as build_preprocessed_season
-    from .season_support import add_season_args, resolve_requested_seasons
-except ImportError:
-    from fullDataPipeline import run_for_season as build_preprocessed_season
-    from season_support import add_season_args, resolve_requested_seasons
+from log_regression.fullDataPipeline import run_for_season as build_preprocessed_season
+from log_regression.season_support import add_season_args, resolve_requested_seasons
 
 RANDOM_SEED = 42
 
